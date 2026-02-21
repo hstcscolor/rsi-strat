@@ -258,7 +258,7 @@ func (s *Strategy) Stop() {
 
 func main() {
 	// 命令行参数
-	mode := flag.String("mode", "run", "运行模式: run, backtest, optimize")
+	mode := flag.String("mode", "run", "运行模式: run, backtest, bounce, optimize")
 	configPath := flag.String("config", "config.json", "配置文件路径")
 	dbPath := flag.String("db", "", "K线数据库路径 (回测模式)")
 	symbol := flag.String("symbol", "BTCUSDT", "交易对")
@@ -310,6 +310,17 @@ func main() {
 		startTime := endTime - 210*24*3600  // 210天 ≈ 7个月
 
 		runBacktestCmd(*dbPath, *symbol, startTime, endTime)
+
+	case "bounce":
+		// 反弹策略回测 - 最近 7 个月
+		if *dbPath == "" {
+			*dbPath = "../binance-klines/klines.db"
+		}
+
+		endTime := time.Now().Unix()
+		startTime := endTime - 210*24*3600
+
+		runBounceBacktestCmd(*dbPath, *symbol, startTime, endTime)
 
 	case "optimize":
 		// 参数优化 - 最近 7 个月
