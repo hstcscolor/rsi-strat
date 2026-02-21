@@ -308,9 +308,12 @@ func main() {
 
 	case "optimize":
 		// 参数优化
-		log.Println("参数优化模式暂未实现")
-		fmt.Println("使用方法:")
-		fmt.Println("  ./rsi-strat backtest --symbol=BTCUSDT --db=../binance-klines/klines.db")
+		if *dbPath == "" {
+			*dbPath = "../binance-klines/klines.db"
+		}
+
+		var startTime, endTime int64
+		runOptimizeCmd(*dbPath, *symbol, startTime, endTime)
 
 	default:
 		log.Fatalf("未知模式: %s", *mode)

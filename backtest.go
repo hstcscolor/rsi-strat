@@ -394,3 +394,112 @@ func runBacktestCmd(dbPath, symbol string, startTime, endTime int64) {
 		)
 	}
 }
+
+// OptimizeResult 优化结果
+type OptimizeResult struct {
+	Config    StrategyConfig
+	TotalPnL  float64
+	WinRate   float64
+	Trades    int
+	ProfitFactor float64
+}
+
+// RunOptimize 参数优化
+func RunOptimize(klines []Kline, config BacktestConfig) {
+	fmt.Println("\n========== 参数优化 ==========")
+	fmt.Println("遍历参数空间...")
+
+	var results []OptimizeResult
+
+	// 参数范围
+	rsiOversoldRange := []float64{25, 30, 35, 40}
+	rsiOverboughtRange := []float64{60, 65, 70, 75}
+	rsiEntryRange := []float64{35, 40, 45, 50}
+	volRatioRange := []float64{1.0, 1.2, 1.5, 2.0}
+
+	total := len(rsiOversoldRange) * len(rsiOverboughtRange) * len(rsiEntryRange) * len(volRatioRange)
+	count := 0
+
+	for _, oversold := range rsiOversoldRange {
+		for _, overbought := range rsiOverboughtRange {
+			for _, entry := range rsiEntryRange {
+				for _, volRatio := range volRatioRange {
+					// 跳过不合理的参数组合
+					if oversold >= entry || entry >= overbought {
+						continue
+					}
+
+					strategyConfig := StrategyConfig{
+						RSI_PERIOD:          14,
+						RSI_OVERSOLD:        oversold,
+						RSI_OVERBOUGHT:      overbought,
+						RSI_ENTRY:           entry,
+						EMA_PERIOD:          20,
+						VOL_RATIO_THRESHOLD: volRatio,
+					}
+
+					result := RunBacktest(klines, config, strategyConfig)
+
+					results = append(results, OptimizeResult{
+						Config:     strategyConfig,
+						TotalPnL:   result.TotalPnL,
+						WinRate:    result.WinRate,
+						Trades:     result.TotalTrades,
+						ProfitFactor: result.ProfitFactor,
+					})
+
+					count++
+					if count%50 == 0 {
+						fmt.Printf("进度: %d/%d\n", count, total)
+					}
+				}
+			}
+		}
+	}
+
+	// 按盈亏排序
+	sortResults(results)
+
+	// 打印 Top 10
+	fmt.Println("\n========== Top 10 参数组合 ==========")
+	fmt.Println("排名 | 总盈亏 | 胜率 | 交易次数 | 盈亏比 | 参数")
+	fmt.Println("-----|--------|------|----------|--------|------")
+	for i, r := range results[:10] {
+		fmt.Printf("%d | $%.2f | %.1f%% | %d | %.2f | oversold=%.0f overbought=%.0f entry=%.0f vol=%.1f\n",
+			i+1, r.TotalPnL, r.WinRate*100, r.Trades, r.ProfitFactor,
+			r.Config.RSI_OVERSOLD, r.Config.RSI_OVERBOUGHT, r.Config.RSI_ENTRY, r.Config.VOL_RATIO_THRESHOLD)
+	}
+}
+
+func sortResults(results []OptimizeResult) {
+	// 按总盈亏降序排序
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[j].TotalPnL > results[i].TotalPnL {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+}
+
+// runOptimizeCmd 执行优化命令
+func runOptimizeCmd(dbPath, symbol string, startTime, endTime int64) {
+	log.Printf("加载 K 线数据: %s", symbol)
+	klines1m, err := loadKlinesFromDB(dbPath, symbol, startTime, endTime)
+	if err != nil {
+		log.Fatalf("加载数据失败: %v", err)
+	}
+	log.Printf("加载 %d 根 1m K 线", len(klines1m))
+
+	klines5m := ResampleTo5m(klines1m)
+	log.Printf("重采样为 %d 根 5m K 线", len(klines5m))
+
+	if len(klines5m) < 100 {
+		log.Fatalf("数据不足")
+	}
+
+	config := DefaultBacktestConfig
+	config.Symbol = symbol
+
+	RunOptimize(klines5m, config)
+}

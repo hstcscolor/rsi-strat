@@ -175,14 +175,14 @@ type StrategyConfig struct {
 	VOL_RATIO_THRESHOLD float64 // 成交量倍数阈值
 }
 
-// DefaultConfig 默认参数
+// DefaultConfig 默认参数（优化后）
 var DefaultConfig = StrategyConfig{
 	RSI_PERIOD:          14,
-	RSI_OVERSOLD:        35,  // RSI < 35 认为偏低
-	RSI_OVERBOUGHT:      65,  // RSI > 65 认为偏高
-	RSI_ENTRY:           42,  // RSI 反弹到 42 入场
+	RSI_OVERSOLD:        40,  // RSI < 40 认为偏低
+	RSI_OVERBOUGHT:      70,  // RSI > 70 认为偏高
+	RSI_ENTRY:           45,  // RSI 反弹到 45 入场
 	EMA_PERIOD:          20,  // EMA20 确认趋势
-	VOL_RATIO_THRESHOLD: 1.3, // 成交量放大 30%
+	VOL_RATIO_THRESHOLD: 2.0, // 成交量放大 100%
 }
 
 // TrendState 趋势状态
