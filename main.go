@@ -300,25 +300,26 @@ func main() {
 		}
 
 	case "backtest":
-		// 回测模式 - 不需要配置文件
+		// 回测模式 - 最近 7 个月
 		if *dbPath == "" {
 			*dbPath = "../binance-klines/klines.db"
 		}
 
-		// 回测全部数据
-		var startTime, endTime int64
-		endTime = 0 // 0 表示不限制
-		startTime = 0
+		// 最近 7 个月
+		endTime := time.Now().Unix()
+		startTime := endTime - 210*24*3600  // 210天 ≈ 7个月
 
 		runBacktestCmd(*dbPath, *symbol, startTime, endTime)
 
 	case "optimize":
-		// 参数优化
+		// 参数优化 - 最近 7 个月
 		if *dbPath == "" {
 			*dbPath = "../binance-klines/klines.db"
 		}
 
-		var startTime, endTime int64
+		endTime := time.Now().Unix()
+		startTime := endTime - 210*24*3600
+
 		runOptimizeCmd(*dbPath, *symbol, startTime, endTime)
 
 	default:

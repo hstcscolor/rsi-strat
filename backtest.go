@@ -18,13 +18,13 @@ type BacktestConfig struct {
 	PositionSize float64 // 仓位比例 (0-1)
 }
 
-// DefaultBacktestConfig 默认回测配置
+// DefaultBacktestConfig 默认回测配置（超短线）
 var DefaultBacktestConfig = BacktestConfig{
 	Symbol:       "BTCUSDT",
 	StartBalance: 10000,
 	FeeRate:      0.0004,
-	Leverage:     5,      // 5倍杠杆
-	PositionSize: 0.5,    // 单次 50% 仓位
+	Leverage:     5,
+	PositionSize: 0.3,  // 第一批 30%
 }
 
 // Trade 记录一笔交易
@@ -173,7 +173,7 @@ type PositionEntry struct {
 	batch      int // 第几批
 }
 
-// RunBacktest 执行回测（支持分批建仓 - 简化版）
+// RunBacktest 执行回测（超短线 1分钟级别）
 func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyConfig) *BacktestResult {
 	result := &BacktestResult{
 		BalanceCurve: []float64{config.StartBalance},
@@ -194,11 +194,11 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 	var position *Position
 	maxBalance := balance
 
-	// 分批建仓参数
-	firstBatchSize  := 0.20  // 第一批 20%
-	secondBatchSize := 0.20  // 第二批 20%
+	// 超短线参数
+	firstBatchSize  := 0.30  // 第一批 30%
+	secondBatchSize := 0.30  // 第二批 30%
 
-	for i := 50; i < n; i++ {
+	for i := 20; i < n; i++ {
 		k := klines[i]
 
 		currentRSI := rsi[i]
@@ -210,35 +210,56 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 		currentVolRatio := volRatio[i]
 
 		// 趋势判断
-		crossUp := prevEMAFast <= prevEMASlow && currentEMAFast > currentEMASlow
-		crossDown := prevEMAFast >= prevEMASlow && currentEMAFast < currentEMASlow
 		uptrend := currentEMAFast > currentEMASlow
 		downtrend := currentEMAFast < currentEMASlow
 
 		volumeOK := currentVolRatio >= strategyConfig.VOL_RATIO_THRESHOLD
 
-		// ========== 出场逻辑 ==========
-		if position != nil {
-			shouldClose := false
-
-			// EMA 反转平仓
-			if position.side == "LONG" && crossDown {
-				shouldClose = true
-			} else if position.side == "SHORT" && crossUp {
-				shouldClose = true
+		// 计算前5根K线最高/最低价
+		high5 := klines[i-1].High
+		low5 := klines[i-1].Low
+		for j := 2; j <= 5 && i-j >= 0; j++ {
+			if klines[i-j].High > high5 {
+				high5 = klines[i-j].High
 			}
+			if klines[i-j].Low < low5 {
+				low5 = klines[i-j].Low
+			}
+		}
 
-			// 止损
+		// ========== 出场逻辑（超短线快进快出）==========
+		if position != nil {
+			shouldCloseAll := false
+
+			// 计算盈亏
 			pnlPercent := (k.Close - position.avgPrice) / position.avgPrice
 			if position.side == "SHORT" {
 				pnlPercent = -pnlPercent
 			}
-			if pnlPercent <= -0.03 {
-				shouldClose = true
+
+			// 分批止盈
+			if pnlPercent >= 0.015 {
+				// 盈利 1.5% → 全平
+				shouldCloseAll = true
+			}
+
+			// 止损
+			if pnlPercent <= -0.005 {
+				// 亏损 0.5% → 全平止损
+				shouldCloseAll = true
+			}
+
+			// EMA 反转
+			crossDown := prevEMAFast > prevEMASlow && currentEMAFast <= currentEMASlow
+			crossUp := prevEMAFast < prevEMASlow && currentEMAFast >= currentEMASlow
+			if position.side == "LONG" && crossDown {
+				shouldCloseAll = true
+			} else if position.side == "SHORT" && crossUp {
+				shouldCloseAll = true
 			}
 
 			// 执行平仓
-			if shouldClose && len(position.entries) > 0 {
+			if shouldCloseAll && len(position.entries) > 0 {
 				for _, entry := range position.entries {
 					trade := Trade{
 						EntryTime:  entry.entryTime,
@@ -268,6 +289,51 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 					}
 				}
 				position = nil
+			} else if pnlPercent >= 0.008 && len(position.entries) > 1 {
+				// 盈利 0.8% → 平掉第一批（部分止盈）
+				var newEntries []PositionEntry
+				for _, entry := range position.entries {
+					if entry.batch == 1 {
+						// 平掉第一批
+						trade := Trade{
+							EntryTime:  entry.entryTime,
+							ExitTime:   k.Timestamp,
+							Side:       position.side,
+							EntryPrice: entry.entryPrice,
+							ExitPrice:  k.Close,
+							Amount:     entry.amount,
+						}
+						if position.side == "LONG" {
+							trade.PnL = (k.Close - entry.entryPrice) * entry.amount
+						} else {
+							trade.PnL = (entry.entryPrice - k.Close) * entry.amount
+						}
+						trade.Fee = (entry.entryPrice + k.Close) * entry.amount * config.FeeRate
+						trade.PnL -= trade.Fee
+
+						balance += trade.PnL
+						result.Trades = append(result.Trades, trade)
+						result.TotalPnL += trade.PnL
+						result.TotalFees += trade.Fee
+						result.TotalTrades++
+						if trade.PnL > 0 {
+							result.WinTrades++
+						} else {
+							result.LoseTrades++
+						}
+					} else {
+						newEntries = append(newEntries, entry)
+					}
+				}
+				if len(newEntries) == 0 {
+					position = nil
+				} else {
+					position.entries = newEntries
+					position.totalAmt = 0
+					for _, e := range newEntries {
+						position.totalAmt += e.amount
+					}
+				}
 			}
 		}
 
@@ -277,11 +343,12 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 			currentPositionPct = position.totalAmt * k.Close / balance
 		}
 
-		// --- 做多 ---
-		// RSI 超卖反弹 + EMA 上升趋势
+		// --- 做多：反弹追趋势 ---
 		if (position == nil || position.side == "LONG") && uptrend {
+			// 第一批：RSI 超卖反弹 + 突破前高
 			rsiBull := prevRSI < strategyConfig.RSI_OVERSOLD_LONG && currentRSI >= strategyConfig.RSI_ENTRY_LONG
-			if rsiBull && volumeOK && currentPositionPct < firstBatchSize {
+			breakoutUp := k.Close > high5
+			if rsiBull && breakoutUp && volumeOK && currentPositionPct < firstBatchSize {
 				if position == nil {
 					position = &Position{side: "LONG"}
 				}
@@ -298,10 +365,10 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 				balance -= k.Close * amount * config.FeeRate
 			}
 
-			// 第二批：盈利 +1.5% 加仓
+			// 第二批：盈利 +0.3% 加仓
 			if position != nil && len(position.entries) == 1 {
 				pnlPercent := (k.Close - position.avgPrice) / position.avgPrice
-				if pnlPercent >= 0.015 && currentPositionPct < firstBatchSize + secondBatchSize {
+				if pnlPercent >= 0.003 && currentPositionPct < firstBatchSize + secondBatchSize {
 					notional := balance * secondBatchSize
 					amount := notional / k.Close
 					position.entries = append(position.entries, PositionEntry{
@@ -317,11 +384,12 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 			}
 		}
 
-		// --- 做空 ---
-		// RSI 超买回落 + EMA 下降趋势
+		// --- 做空：回落追趋势 ---
 		if (position == nil || position.side == "SHORT") && downtrend {
+			// 第一批：RSI 超买回落 + 跌破前低
 			rsiBear := prevRSI > strategyConfig.RSI_OVERBOUGHT_SHORT && currentRSI <= strategyConfig.RSI_ENTRY_SHORT
-			if rsiBear && volumeOK && currentPositionPct < firstBatchSize {
+			breakoutDown := k.Close < low5
+			if rsiBear && breakoutDown && volumeOK && currentPositionPct < firstBatchSize {
 				if position == nil {
 					position = &Position{side: "SHORT"}
 				}
@@ -338,10 +406,10 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 				balance -= k.Close * amount * config.FeeRate
 			}
 
-			// 第二批：盈利 +1.5% 加仓
+			// 第二批：盈利 +0.3% 加仓
 			if position != nil && len(position.entries) == 1 {
 				pnlPercent := (position.avgPrice - k.Close) / position.avgPrice
-				if pnlPercent >= 0.015 && currentPositionPct < firstBatchSize + secondBatchSize {
+				if pnlPercent >= 0.003 && currentPositionPct < firstBatchSize + secondBatchSize {
 					notional := balance * secondBatchSize
 					amount := notional / k.Close
 					position.entries = append(position.entries, PositionEntry{
@@ -430,27 +498,23 @@ func PrintResult(result *BacktestResult) {
 // runBacktestCmd 执行回测命令
 func runBacktestCmd(dbPath, symbol string, startTime, endTime int64) {
 	log.Printf("加载 K 线数据: %s", symbol)
-	klines1m, err := loadKlinesFromDB(dbPath, symbol, startTime, endTime)
+	klines, err := loadKlinesFromDB(dbPath, symbol, startTime, endTime)
 	if err != nil {
 		log.Fatalf("加载数据失败: %v", err)
 	}
-	log.Printf("加载 %d 根 1m K 线", len(klines1m))
+	log.Printf("加载 %d 根 1m K 线（超短线模式）", len(klines))
 
-	// 重采样为 5m
-	klines5m := ResampleTo5m(klines1m)
-	log.Printf("重采样为 %d 根 5m K 线", len(klines5m))
-
-	if len(klines5m) < 100 {
-		log.Fatalf("数据不足，至少需要 100 根 5m K 线")
+	if len(klines) < 100 {
+		log.Fatalf("数据不足，至少需要 100 根 K 线")
 	}
 
-	// 运行回测
+	// 直接用 1 分钟 K 线，不重采样
 	config := DefaultBacktestConfig
 	config.Symbol = symbol
 
 	strategyConfig := DefaultConfig
 
-	result := RunBacktest(klines5m, config, strategyConfig)
+	result := RunBacktest(klines, config, strategyConfig)
 	PrintResult(result)
 
 	// 打印最近几笔交易
@@ -570,21 +634,18 @@ func sortResults(results []OptimizeResult) {
 // runOptimizeCmd 执行优化命令
 func runOptimizeCmd(dbPath, symbol string, startTime, endTime int64) {
 	log.Printf("加载 K 线数据: %s", symbol)
-	klines1m, err := loadKlinesFromDB(dbPath, symbol, startTime, endTime)
+	klines, err := loadKlinesFromDB(dbPath, symbol, startTime, endTime)
 	if err != nil {
 		log.Fatalf("加载数据失败: %v", err)
 	}
-	log.Printf("加载 %d 根 1m K 线", len(klines1m))
+	log.Printf("加载 %d 根 1m K 线（超短线模式）", len(klines))
 
-	klines5m := ResampleTo5m(klines1m)
-	log.Printf("重采样为 %d 根 5m K 线", len(klines5m))
-
-	if len(klines5m) < 100 {
+	if len(klines) < 100 {
 		log.Fatalf("数据不足")
 	}
 
 	config := DefaultBacktestConfig
 	config.Symbol = symbol
 
-	RunOptimize(klines5m, config)
+	RunOptimize(klines, config)
 }

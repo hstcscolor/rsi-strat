@@ -180,16 +180,16 @@ type StrategyConfig struct {
 	VOL_RATIO_THRESHOLD  float64
 }
 
-// DefaultConfig 默认参数（短线投机，5倍杠杆）
+// DefaultConfig 默认参数（超短线 1分钟，优化后）
 var DefaultConfig = StrategyConfig{
 	RSI_PERIOD:           14,
-	RSI_OVERSOLD_LONG:    40,
-	RSI_ENTRY_LONG:       45,
-	RSI_OVERBOUGHT_SHORT: 55,
-	RSI_ENTRY_SHORT:      45,
+	RSI_OVERSOLD_LONG:    35,
+	RSI_ENTRY_LONG:       55,
+	RSI_OVERBOUGHT_SHORT: 65,
+	RSI_ENTRY_SHORT:      55,
 	EMA_FAST:             7,
 	EMA_SLOW:             30,
-	VOL_RATIO_THRESHOLD:  1.0,
+	VOL_RATIO_THRESHOLD:  1.5,
 }
 
 // TrendState 趋势状态
