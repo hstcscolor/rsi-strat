@@ -33,7 +33,7 @@ type BounceConfig struct {
 	RSIExit         float64 // RSI 止损阈值
 }
 
-// DefaultBounceConfig 默认配置（平衡版）
+// DefaultBounceConfig 默认配置（降低目标）
 var DefaultBounceConfig = BounceConfig{
 	Symbol:          "BTCUSDT",
 	StartBalance:    10000,
@@ -47,12 +47,12 @@ var DefaultBounceConfig = BounceConfig{
 	OtherBatchSize:  0.13,
 	BatchInterval:   180,
 	MaxBatches:      7,
-	BounceTarget:    0.25,
-	ProfitThreshold: 0.50,
-	StartExitTime:   600,
-	ExitInterval:    180,
+	BounceTarget:    0.15,   // 15%（降低）
+	ProfitThreshold: 0.40,   // 40%就开始减仓（更早）
+	StartExitTime:   300,    // 5分钟就开始（更早）
+	ExitInterval:    120,    // 2分钟减一次（更快）
 	ExitPercent:     0.25,
-	MaxHoldTime:     2700,   // 45分钟
+	MaxHoldTime:     1800,   // 30分钟（缩短）
 	RSIExit:         32,
 }
 
@@ -291,8 +291,13 @@ func RunBounceBacktest(klines []Kline, config BounceConfig) *BounceResult {
 
 		// ========== 建仓逻辑 ==========
 		if position == nil {
-			// 检测入场条件：下跌 + 低点确认 + 反弹确认
-			if hasDrop && prevRSI < config.RSIOversold && currentRSI >= config.RSIEntry && uptrend {
+			// 检测入场条件：
+			// 1. 下跌 > 阈值
+			// 2. RSI 从超卖反弹
+			// 3. 当前价格已经从低点反弹 > 1%（确认趋势）
+			priceBounce := (k.Close - lowPrice) / lowPrice
+			
+			if hasDrop && prevRSI < config.RSIOversold && currentRSI >= config.RSIEntry && uptrend && priceBounce >= 0.01 {
 				// 计算目标价
 				targetPrice := lowPrice + (highPrice-lowPrice)*config.BounceTarget
 
