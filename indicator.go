@@ -178,11 +178,11 @@ type StrategyConfig struct {
 // DefaultConfig 默认参数
 var DefaultConfig = StrategyConfig{
 	RSI_PERIOD:          14,
-	RSI_OVERSOLD:        30,  // RSI < 30 超卖
-	RSI_OVERBOUGHT:      70,  // RSI > 70 超买
-	RSI_ENTRY:           35,  // RSI 反弹到 35 可入场
+	RSI_OVERSOLD:        35,  // RSI < 35 认为偏低
+	RSI_OVERBOUGHT:      65,  // RSI > 65 认为偏高
+	RSI_ENTRY:           42,  // RSI 反弹到 42 入场
 	EMA_PERIOD:          20,  // EMA20 确认趋势
-	VOL_RATIO_THRESHOLD: 1.5, // 成交量放大 50%
+	VOL_RATIO_THRESHOLD: 1.3, // 成交量放大 30%
 }
 
 // TrendState 趋势状态
@@ -220,22 +220,22 @@ func GenerateSignal(klines []Kline, config StrategyConfig) Signal {
 	volumeOK := currentVolRatio >= config.VOL_RATIO_THRESHOLD
 
 	// === 做多信号 ===
-	// 1. RSI 从超卖区反弹（之前 < 30，现在 >= 35）
+	// 1. RSI 从低位反弹（之前 < 40，现在 >= 45）
 	// 2. 价格突破 EMA（收盘价 > EMA）
 	// 3. 成交量放大
 	rsiBull := prevRSI < config.RSI_OVERSOLD && currentRSI >= config.RSI_ENTRY
-	emaBull := currentClose > currentEMA && klines[n-1].High > klines[n-2].High
+	emaBull := currentClose > currentEMA
 
 	if rsiBull && emaBull && volumeOK {
 		return SignalLong
 	}
 
 	// === 做空信号 ===
-	// 1. RSI 从超买区回落（之前 > 70，现在 <= 65）
+	// 1. RSI 从高位回落（之前 > 60，现在 <= 55）
 	// 2. 价格跌破 EMA（收盘价 < EMA）
 	// 3. 成交量放大
-	rsiBear := prevRSI > config.RSI_OVERBOUGHT && currentRSI <= 65
-	emaBear := currentClose < currentEMA && klines[n-1].Low < klines[n-2].Low
+	rsiBear := prevRSI > config.RSI_OVERBOUGHT && currentRSI <= 55
+	emaBear := currentClose < currentEMA
 
 	if rsiBear && emaBear && volumeOK {
 		return SignalShort

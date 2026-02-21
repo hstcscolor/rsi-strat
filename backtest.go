@@ -157,91 +157,132 @@ func ResampleTo5m(klines1m []Kline) []Kline {
 	return klines5m
 }
 
-// RunBacktest 执行回测
+// RunBacktest 执行回测（优化版：预先计算所有指标）
 func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyConfig) *BacktestResult {
 	result := &BacktestResult{
 		BalanceCurve: []float64{config.StartBalance},
 	}
 
+	n := len(klines)
+	if n < 50 {
+		return result
+	}
+
+	// 预先计算所有指标
+	rsi := CalculateRSI(klines, strategyConfig.RSI_PERIOD)
+	ema20 := CalculateEMA(klines, strategyConfig.EMA_PERIOD)
+	ema50 := CalculateEMA(klines, 50)  // 加入长期 EMA
+	volRatio := VolumeRatio(klines, strategyConfig.RSI_PERIOD)
+
 	balance := config.StartBalance
 	var position *struct {
-		side      string
-		entryTime int64
+		side       string
+		entryTime  int64
 		entryPrice float64
-		amount    float64
+		amount     float64
 	}
 	maxBalance := balance
 
-	for i := 20; i < len(klines); i++ {
+	for i := 50; i < n; i++ {
 		k := klines[i]
-		window := klines[:i+1]
 
-		signal := GenerateSignal(window, strategyConfig)
+		// 直接使用预计算的指标
+		currentRSI := rsi[i]
+		prevRSI := rsi[i-1]
+		currentEMA20 := ema20[i]
+		currentEMA50 := ema50[i]
+		currentVolRatio := volRatio[i]
+
+		// 判断大趋势
+		uptrend := currentEMA20 > currentEMA50
+		downtrend := currentEMA20 < currentEMA50
 
 		// 如果有持仓，检查平仓条件
 		if position != nil {
-			// 平仓条件：趋势衰竭
-			exitSignal := GenerateExitSignal(window, strategyConfig, position.side)
-			if exitSignal == SignalCloseLong || exitSignal == SignalCloseShort {
-					// 平仓
-					trade := Trade{
-						EntryTime:  position.entryTime,
-						ExitTime:   k.Timestamp,
-						Side:       position.side,
-						EntryPrice: position.entryPrice,
-						ExitPrice:  k.Close,
-						Amount:     position.amount,
-					}
+			// 平仓条件：RSI 反向穿越
+			shouldClose := false
+			if position.side == "LONG" && currentRSI < 40 {
+				shouldClose = true
+			} else if position.side == "SHORT" && currentRSI > 60 {
+				shouldClose = true
+			}
 
-					if position.side == "LONG" {
-						trade.PnL = (k.Close - position.entryPrice) * position.amount
-					} else {
-						trade.PnL = (position.entryPrice - k.Close) * position.amount
-					}
+			if shouldClose {
+				trade := Trade{
+					EntryTime:  position.entryTime,
+					ExitTime:   k.Timestamp,
+					Side:       position.side,
+					EntryPrice: position.entryPrice,
+					ExitPrice:  k.Close,
+					Amount:     position.amount,
+				}
 
-					trade.Fee = (position.entryPrice + k.Close) * position.amount * config.FeeRate
-					trade.PnL -= trade.Fee
+				if position.side == "LONG" {
+					trade.PnL = (k.Close - position.entryPrice) * position.amount
+				} else {
+					trade.PnL = (position.entryPrice - k.Close) * position.amount
+				}
 
-					balance += trade.PnL
-					result.Trades = append(result.Trades, trade)
-					result.TotalPnL += trade.PnL
-					result.TotalFees += trade.Fee
-					result.TotalTrades++
+				trade.Fee = (position.entryPrice + k.Close) * position.amount * config.FeeRate
+				trade.PnL -= trade.Fee
 
-					if trade.PnL > 0 {
-						result.WinTrades++
-					} else {
-						result.LoseTrades++
-					}
+				balance += trade.PnL
+				result.Trades = append(result.Trades, trade)
+				result.TotalPnL += trade.PnL
+				result.TotalFees += trade.Fee
+				result.TotalTrades++
 
-					position = nil
+				if trade.PnL > 0 {
+					result.WinTrades++
+				} else {
+					result.LoseTrades++
+				}
+
+				position = nil
 			}
 		}
 
-		// 开仓
-		if position == nil && signal != SignalNone {
-			notional := balance * config.PositionSize
-			amount := notional / k.Close
+		// 开仓信号
+		if position == nil {
+			volumeOK := currentVolRatio >= strategyConfig.VOL_RATIO_THRESHOLD
 
-			side := "LONG"
-			if signal == SignalShort {
-				side = "SHORT"
+			// 做多：上升趋势 + RSI 超卖反弹
+			rsiBull := prevRSI < strategyConfig.RSI_OVERSOLD && currentRSI >= strategyConfig.RSI_ENTRY
+			if rsiBull && uptrend && volumeOK {
+				notional := balance * config.PositionSize
+				amount := notional / k.Close
+				position = &struct {
+					side       string
+					entryTime  int64
+					entryPrice float64
+					amount     float64
+				}{
+					side:       "LONG",
+					entryTime:  k.Timestamp,
+					entryPrice: k.Close,
+					amount:     amount,
+				}
+				balance -= k.Close * amount * config.FeeRate
 			}
 
-			position = &struct {
-				side      string
-				entryTime int64
-				entryPrice float64
-				amount    float64
-			}{
-				side:       side,
-				entryTime:  k.Timestamp,
-				entryPrice: k.Close,
-				amount:     amount,
+			// 做空：下降趋势 + RSI 超买回落
+			rsiBear := prevRSI > strategyConfig.RSI_OVERBOUGHT && currentRSI <= 58
+			if rsiBear && downtrend && volumeOK {
+				notional := balance * config.PositionSize
+				amount := notional / k.Close
+				position = &struct {
+					side       string
+					entryTime  int64
+					entryPrice float64
+					amount     float64
+				}{
+					side:       "SHORT",
+					entryTime:  k.Timestamp,
+					entryPrice: k.Close,
+					amount:     amount,
+				}
+				balance -= k.Close * amount * config.FeeRate
 			}
-
-			// 扣除开仓手续费
-			balance -= k.Close * amount * config.FeeRate
 		}
 
 		// 更新资金曲线
@@ -288,6 +329,29 @@ func PrintResult(result *BacktestResult) {
 	fmt.Printf("总手续费: $%.2f\n", result.TotalFees)
 	fmt.Printf("盈亏比: %.2f\n", result.ProfitFactor)
 	fmt.Printf("最大回撤: %.2f%%\n", result.MaxDrawdown*100)
+
+	// 统计多空表现
+	var longTrades, longWins int
+	var longPnL, shortPnL float64
+	var shortTrades, shortWins int
+	for _, t := range result.Trades {
+		if t.Side == "LONG" {
+			longTrades++
+			longPnL += t.PnL
+			if t.PnL > 0 {
+				longWins++
+			}
+		} else {
+			shortTrades++
+			shortPnL += t.PnL
+			if t.PnL > 0 {
+				shortWins++
+			}
+		}
+	}
+	fmt.Println("\n--- 多空分开统计 ---")
+	fmt.Printf("做多: %d 次, 胜率 %.1f%%, 盈亏 $%.2f\n", longTrades, float64(longWins)/float64(longTrades)*100, longPnL)
+	fmt.Printf("做空: %d 次, 胜率 %.1f%%, 盈亏 $%.2f\n", shortTrades, float64(shortWins)/float64(shortTrades)*100, shortPnL)
 	fmt.Println("================================")
 }
 
