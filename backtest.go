@@ -157,7 +157,23 @@ func ResampleTo5m(klines1m []Kline) []Kline {
 	return klines5m
 }
 
-// RunBacktest 执行回测（优化版：预先计算所有指标）
+// Position 持仓信息（支持分批建仓）
+type Position struct {
+	side       string
+	entries    []PositionEntry // 多个入场点
+	totalAmt   float64         // 总持仓量
+	avgPrice   float64         // 平均入场价
+}
+
+// PositionEntry 单次入场记录
+type PositionEntry struct {
+	entryTime  int64
+	entryPrice float64
+	amount     float64
+	batch      int // 第几批
+}
+
+// RunBacktest 执行回测（支持分批建仓 - 简化版）
 func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyConfig) *BacktestResult {
 	result := &BacktestResult{
 		BalanceCurve: []float64{config.StartBalance},
@@ -175,18 +191,16 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 	volRatio := VolumeRatio(klines, strategyConfig.RSI_PERIOD)
 
 	balance := config.StartBalance
-	var position *struct {
-		side       string
-		entryTime  int64
-		entryPrice float64
-		amount     float64
-	}
+	var position *Position
 	maxBalance := balance
+
+	// 分批建仓参数
+	firstBatchSize  := 0.20  // 第一批 20%
+	secondBatchSize := 0.20  // 第二批 20%
 
 	for i := 50; i < n; i++ {
 		k := klines[i]
 
-		// 直接使用预计算的指标
 		currentRSI := rsi[i]
 		prevRSI := rsi[i-1]
 		currentEMAFast := emaFast[i]
@@ -195,103 +209,151 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 		prevEMASlow := emaSlow[i-1]
 		currentVolRatio := volRatio[i]
 
-		// 判断大趋势
+		// 趋势判断
+		crossUp := prevEMAFast <= prevEMASlow && currentEMAFast > currentEMASlow
+		crossDown := prevEMAFast >= prevEMASlow && currentEMAFast < currentEMASlow
 		uptrend := currentEMAFast > currentEMASlow
 		downtrend := currentEMAFast < currentEMASlow
 
-		// 如果有持仓，检查平仓条件
+		volumeOK := currentVolRatio >= strategyConfig.VOL_RATIO_THRESHOLD
+
+		// ========== 出场逻辑 ==========
 		if position != nil {
-			// 平仓条件：EMA 死叉/金叉 + RSI 确认
 			shouldClose := false
-			if position.side == "LONG" {
-				// 多头平仓：快线死叉慢线 或 RSI 跌破 40
-				crossDown := prevEMAFast > prevEMASlow && currentEMAFast <= currentEMASlow
-				if crossDown || currentRSI < 40 {
-					shouldClose = true
-				}
-			} else if position.side == "SHORT" {
-				// 空头平仓：快线金叉慢线 或 RSI 突破 60
-				crossUp := prevEMAFast < prevEMASlow && currentEMAFast >= currentEMASlow
-				if crossUp || currentRSI > 60 {
-					shouldClose = true
-				}
+
+			// EMA 反转平仓
+			if position.side == "LONG" && crossDown {
+				shouldClose = true
+			} else if position.side == "SHORT" && crossUp {
+				shouldClose = true
 			}
 
-			if shouldClose {
-				trade := Trade{
-					EntryTime:  position.entryTime,
-					ExitTime:   k.Timestamp,
-					Side:       position.side,
-					EntryPrice: position.entryPrice,
-					ExitPrice:  k.Close,
-					Amount:     position.amount,
+			// 止损
+			pnlPercent := (k.Close - position.avgPrice) / position.avgPrice
+			if position.side == "SHORT" {
+				pnlPercent = -pnlPercent
+			}
+			if pnlPercent <= -0.03 {
+				shouldClose = true
+			}
+
+			// 执行平仓
+			if shouldClose && len(position.entries) > 0 {
+				for _, entry := range position.entries {
+					trade := Trade{
+						EntryTime:  entry.entryTime,
+						ExitTime:   k.Timestamp,
+						Side:       position.side,
+						EntryPrice: entry.entryPrice,
+						ExitPrice:  k.Close,
+						Amount:     entry.amount,
+					}
+					if position.side == "LONG" {
+						trade.PnL = (k.Close - entry.entryPrice) * entry.amount
+					} else {
+						trade.PnL = (entry.entryPrice - k.Close) * entry.amount
+					}
+					trade.Fee = (entry.entryPrice + k.Close) * entry.amount * config.FeeRate
+					trade.PnL -= trade.Fee
+
+					balance += trade.PnL
+					result.Trades = append(result.Trades, trade)
+					result.TotalPnL += trade.PnL
+					result.TotalFees += trade.Fee
+					result.TotalTrades++
+					if trade.PnL > 0 {
+						result.WinTrades++
+					} else {
+						result.LoseTrades++
+					}
 				}
-
-				if position.side == "LONG" {
-					trade.PnL = (k.Close - position.entryPrice) * position.amount
-				} else {
-					trade.PnL = (position.entryPrice - k.Close) * position.amount
-				}
-
-				trade.Fee = (position.entryPrice + k.Close) * position.amount * config.FeeRate
-				trade.PnL -= trade.Fee
-
-				balance += trade.PnL
-				result.Trades = append(result.Trades, trade)
-				result.TotalPnL += trade.PnL
-				result.TotalFees += trade.Fee
-				result.TotalTrades++
-
-				if trade.PnL > 0 {
-					result.WinTrades++
-				} else {
-					result.LoseTrades++
-				}
-
 				position = nil
 			}
 		}
 
-		// 开仓信号
-		if position == nil {
-			volumeOK := currentVolRatio >= strategyConfig.VOL_RATIO_THRESHOLD
+		// ========== 建仓逻辑 ==========
+		currentPositionPct := 0.0
+		if position != nil {
+			currentPositionPct = position.totalAmt * k.Close / balance
+		}
 
-			// 做多：上升趋势 + RSI 超卖反弹
+		// --- 做多 ---
+		// 第一批：RSI 超卖反弹 + EMA 上升趋势
+		if (position == nil || position.side == "LONG") && uptrend {
 			rsiBull := prevRSI < strategyConfig.RSI_OVERSOLD && currentRSI >= strategyConfig.RSI_ENTRY
-			if rsiBull && uptrend && volumeOK {
-				notional := balance * config.PositionSize
+			if rsiBull && volumeOK && currentPositionPct < firstBatchSize {
+				if position == nil {
+					position = &Position{side: "LONG"}
+				}
+				notional := balance * firstBatchSize
 				amount := notional / k.Close
-				position = &struct {
-					side       string
-					entryTime  int64
-					entryPrice float64
-					amount     float64
-				}{
-					side:       "LONG",
+				position.entries = append(position.entries, PositionEntry{
 					entryTime:  k.Timestamp,
 					entryPrice: k.Close,
 					amount:     amount,
-				}
+					batch:      1,
+				})
+				position.totalAmt += amount
+				position.avgPrice = (position.avgPrice*(position.totalAmt-amount) + k.Close*amount) / position.totalAmt
 				balance -= k.Close * amount * config.FeeRate
 			}
 
-			// 做空：下降趋势 + RSI 超买回落
+			// 第二批：盈利 +2% 加仓
+			if position != nil && len(position.entries) == 1 {
+				pnlPercent := (k.Close - position.avgPrice) / position.avgPrice
+				if pnlPercent >= 0.02 && currentPositionPct < firstBatchSize + secondBatchSize {
+					notional := balance * secondBatchSize
+					amount := notional / k.Close
+					position.entries = append(position.entries, PositionEntry{
+						entryTime:  k.Timestamp,
+						entryPrice: k.Close,
+						amount:     amount,
+						batch:      2,
+					})
+					position.totalAmt += amount
+					position.avgPrice = (position.avgPrice*(position.totalAmt-amount) + k.Close*amount) / position.totalAmt
+					balance -= k.Close * amount * config.FeeRate
+				}
+			}
+		}
+
+		// --- 做空 ---
+		// 第一批：RSI 超买回落 + EMA 下降趋势
+		if (position == nil || position.side == "SHORT") && downtrend {
 			rsiBear := prevRSI > strategyConfig.RSI_OVERBOUGHT && currentRSI <= 58
-			if rsiBear && downtrend && volumeOK {
-				notional := balance * config.PositionSize
+			if rsiBear && volumeOK && currentPositionPct < firstBatchSize {
+				if position == nil {
+					position = &Position{side: "SHORT"}
+				}
+				notional := balance * firstBatchSize
 				amount := notional / k.Close
-				position = &struct {
-					side       string
-					entryTime  int64
-					entryPrice float64
-					amount     float64
-				}{
-					side:       "SHORT",
+				position.entries = append(position.entries, PositionEntry{
 					entryTime:  k.Timestamp,
 					entryPrice: k.Close,
 					amount:     amount,
-				}
+					batch:      1,
+				})
+				position.totalAmt += amount
+				position.avgPrice = (position.avgPrice*(position.totalAmt-amount) + k.Close*amount) / position.totalAmt
 				balance -= k.Close * amount * config.FeeRate
+			}
+
+			// 第二批：盈利 +2% 加仓
+			if position != nil && len(position.entries) == 1 {
+				pnlPercent := (position.avgPrice - k.Close) / position.avgPrice
+				if pnlPercent >= 0.02 && currentPositionPct < firstBatchSize + secondBatchSize {
+					notional := balance * secondBatchSize
+					amount := notional / k.Close
+					position.entries = append(position.entries, PositionEntry{
+						entryTime:  k.Timestamp,
+						entryPrice: k.Close,
+						amount:     amount,
+						batch:      2,
+					})
+					position.totalAmt += amount
+					position.avgPrice = (position.avgPrice*(position.totalAmt-amount) + k.Close*amount) / position.totalAmt
+					balance -= k.Close * amount * config.FeeRate
+				}
 			}
 		}
 

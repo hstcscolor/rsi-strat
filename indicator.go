@@ -176,15 +176,15 @@ type StrategyConfig struct {
 	VOL_RATIO_THRESHOLD float64 // 成交量倍数阈值
 }
 
-// DefaultConfig 默认参数（优化后）
+// DefaultConfig 默认参数（分批建仓优化后）
 var DefaultConfig = StrategyConfig{
 	RSI_PERIOD:          14,
 	RSI_OVERSOLD:        40,
 	RSI_OVERBOUGHT:      75,
 	RSI_ENTRY:           45,
 	EMA_FAST:            7,
-	EMA_SLOW:            30,
-	VOL_RATIO_THRESHOLD: 1.5,
+	EMA_SLOW:            20,
+	VOL_RATIO_THRESHOLD: 2.0,
 }
 
 // TrendState 趋势状态
