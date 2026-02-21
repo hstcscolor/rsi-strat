@@ -171,18 +171,20 @@ type StrategyConfig struct {
 	RSI_OVERSOLD        float64 // RSI 超卖阈值
 	RSI_OVERBOUGHT      float64 // RSI 超买阈值
 	RSI_ENTRY           float64 // RSI 入场阈值
-	EMA_PERIOD          int     // EMA 周期
+	EMA_FAST            int     // 快线 EMA 周期
+	EMA_SLOW            int     // 慢线 EMA 周期
 	VOL_RATIO_THRESHOLD float64 // 成交量倍数阈值
 }
 
 // DefaultConfig 默认参数（优化后）
 var DefaultConfig = StrategyConfig{
 	RSI_PERIOD:          14,
-	RSI_OVERSOLD:        40,  // RSI < 40 认为偏低
-	RSI_OVERBOUGHT:      70,  // RSI > 70 认为偏高
-	RSI_ENTRY:           45,  // RSI 反弹到 45 入场
-	EMA_PERIOD:          20,  // EMA20 确认趋势
-	VOL_RATIO_THRESHOLD: 2.0, // 成交量放大 100%
+	RSI_OVERSOLD:        40,
+	RSI_OVERBOUGHT:      75,
+	RSI_ENTRY:           45,
+	EMA_FAST:            7,
+	EMA_SLOW:            30,
+	VOL_RATIO_THRESHOLD: 1.5,
 }
 
 // TrendState 趋势状态
@@ -194,85 +196,45 @@ const (
 	TrendDown       // 下降趋势
 )
 
-// GenerateSignal 生成交易信号 - 反转后的趋势策略
-// 逻辑：RSI 超卖反弹 + EMA 确认趋势 + 成交量放大
+// GenerateSignal 生成交易信号（实盘用，回测用 RunBacktest 里的逻辑）
 func GenerateSignal(klines []Kline, config StrategyConfig) Signal {
 	n := len(klines)
-	if n < config.RSI_PERIOD+2 || n < config.EMA_PERIOD+1 {
+	if n < config.RSI_PERIOD+2 || n < config.EMA_SLOW+1 {
 		return SignalNone
 	}
 
 	rsi := CalculateRSI(klines, config.RSI_PERIOD)
-	ema := CalculateEMA(klines, config.EMA_PERIOD)
+	emaFast := CalculateEMA(klines, config.EMA_FAST)
+	emaSlow := CalculateEMA(klines, config.EMA_SLOW)
 	volRatio := VolumeRatio(klines, config.RSI_PERIOD)
 
-	if rsi == nil || ema == nil || volRatio == nil {
+	if rsi == nil || emaFast == nil || emaSlow == nil || volRatio == nil {
 		return SignalNone
 	}
 
 	currentRSI := rsi[n-1]
 	prevRSI := rsi[n-2]
-	currentClose := klines[n-1].Close
-	currentEMA := ema[n-1]
+	currentEMAFast := emaFast[n-1]
+	currentEMASlow := emaSlow[n-1]
 	currentVolRatio := volRatio[n-1]
+
+	// 趋势判断
+	uptrend := currentEMAFast > currentEMASlow
+	downtrend := currentEMAFast < currentEMASlow
 
 	// 成交量放大
 	volumeOK := currentVolRatio >= config.VOL_RATIO_THRESHOLD
 
 	// === 做多信号 ===
-	// 1. RSI 从低位反弹（之前 < 40，现在 >= 45）
-	// 2. 价格突破 EMA（收盘价 > EMA）
-	// 3. 成交量放大
 	rsiBull := prevRSI < config.RSI_OVERSOLD && currentRSI >= config.RSI_ENTRY
-	emaBull := currentClose > currentEMA
-
-	if rsiBull && emaBull && volumeOK {
+	if rsiBull && uptrend && volumeOK {
 		return SignalLong
 	}
 
 	// === 做空信号 ===
-	// 1. RSI 从高位回落（之前 > 60，现在 <= 55）
-	// 2. 价格跌破 EMA（收盘价 < EMA）
-	// 3. 成交量放大
-	rsiBear := prevRSI > config.RSI_OVERBOUGHT && currentRSI <= 55
-	emaBear := currentClose < currentEMA
-
-	if rsiBear && emaBear && volumeOK {
+	rsiBear := prevRSI > config.RSI_OVERBOUGHT && currentRSI <= 58
+	if rsiBear && downtrend && volumeOK {
 		return SignalShort
-	}
-
-	return SignalNone
-}
-
-// GenerateExitSignal 生成出场信号 - 趋势衰竭
-func GenerateExitSignal(klines []Kline, config StrategyConfig, positionSide string) Signal {
-	n := len(klines)
-	if n < config.RSI_PERIOD+1 {
-		return SignalNone
-	}
-
-	rsi := CalculateRSI(klines, config.RSI_PERIOD)
-	if rsi == nil {
-		return SignalNone
-	}
-
-	currentRSI := rsi[n-1]
-	prevRSI := rsi[n-2]
-
-	// 多头出场：趋势衰竭
-	if positionSide == "LONG" {
-		// RSI 从高位回落，跌破 50 中性线
-		if prevRSI >= 50 && currentRSI < 50 {
-			return SignalCloseLong
-		}
-	}
-
-	// 空头出场：趋势衰竭
-	if positionSide == "SHORT" {
-		// RSI 从低位反弹，突破 50 中性线
-		if prevRSI <= 50 && currentRSI > 50 {
-			return SignalCloseShort
-		}
 	}
 
 	return SignalNone

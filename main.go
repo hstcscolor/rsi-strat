@@ -23,7 +23,8 @@ type Config struct {
 	RSI_OVERSOLD        float64 `json:"rsi_oversold"`
 	RSI_OVERBOUGHT      float64 `json:"rsi_overbought"`
 	RSI_ENTRY           float64 `json:"rsi_entry"`
-	EMA_PERIOD          int     `json:"ema_period"`
+	EMA_FAST            int     `json:"ema_fast"`
+	EMA_SLOW            int     `json:"ema_slow"`
 	VOL_RATIO_THRESHOLD float64 `json:"vol_ratio_threshold"`
 	// 交易参数
 	PositionSize float64 `json:"position_size"`
@@ -36,11 +37,12 @@ type Config struct {
 var defaultConfig = Config{
 	Symbol:              "BTCUSDT",
 	RSI_PERIOD:          14,
-	RSI_OVERSOLD:        30,
+	RSI_OVERSOLD:        40,
 	RSI_OVERBOUGHT:      70,
-	RSI_ENTRY:           35,
-	EMA_PERIOD:          20,
-	VOL_RATIO_THRESHOLD: 1.5,
+	RSI_ENTRY:           45,
+	EMA_FAST:            5,
+	EMA_SLOW:            14,
+	VOL_RATIO_THRESHOLD: 2.0,
 	PositionSize:        0.1,
 	Leverage:            1,
 	DryRun:              true,
@@ -201,7 +203,8 @@ func (s *Strategy) Run() error {
 				RSI_OVERSOLD:        s.config.RSI_OVERSOLD,
 				RSI_OVERBOUGHT:      s.config.RSI_OVERBOUGHT,
 				RSI_ENTRY:           s.config.RSI_ENTRY,
-				EMA_PERIOD:          s.config.EMA_PERIOD,
+				EMA_FAST:            s.config.EMA_FAST,
+				EMA_SLOW:            s.config.EMA_SLOW,
 				VOL_RATIO_THRESHOLD: s.config.VOL_RATIO_THRESHOLD,
 			}
 
