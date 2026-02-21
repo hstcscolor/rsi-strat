@@ -22,9 +22,9 @@ type BacktestConfig struct {
 var DefaultBacktestConfig = BacktestConfig{
 	Symbol:       "BTCUSDT",
 	StartBalance: 10000,
-	FeeRate:      0.0004, // 0.04%
-	Leverage:     1,
-	PositionSize: 0.3,
+	FeeRate:      0.0004,
+	Leverage:     5,      // 5倍杠杆
+	PositionSize: 0.5,    // 单次 50% 仓位
 }
 
 // Trade 记录一笔交易
@@ -278,9 +278,9 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 		}
 
 		// --- 做多 ---
-		// 第一批：RSI 超卖反弹 + EMA 上升趋势
+		// RSI 超卖反弹 + EMA 上升趋势
 		if (position == nil || position.side == "LONG") && uptrend {
-			rsiBull := prevRSI < strategyConfig.RSI_OVERSOLD && currentRSI >= strategyConfig.RSI_ENTRY
+			rsiBull := prevRSI < strategyConfig.RSI_OVERSOLD_LONG && currentRSI >= strategyConfig.RSI_ENTRY_LONG
 			if rsiBull && volumeOK && currentPositionPct < firstBatchSize {
 				if position == nil {
 					position = &Position{side: "LONG"}
@@ -298,10 +298,10 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 				balance -= k.Close * amount * config.FeeRate
 			}
 
-			// 第二批：盈利 +2% 加仓
+			// 第二批：盈利 +1.5% 加仓
 			if position != nil && len(position.entries) == 1 {
 				pnlPercent := (k.Close - position.avgPrice) / position.avgPrice
-				if pnlPercent >= 0.02 && currentPositionPct < firstBatchSize + secondBatchSize {
+				if pnlPercent >= 0.015 && currentPositionPct < firstBatchSize + secondBatchSize {
 					notional := balance * secondBatchSize
 					amount := notional / k.Close
 					position.entries = append(position.entries, PositionEntry{
@@ -318,9 +318,9 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 		}
 
 		// --- 做空 ---
-		// 第一批：RSI 超买回落 + EMA 下降趋势
+		// RSI 超买回落 + EMA 下降趋势
 		if (position == nil || position.side == "SHORT") && downtrend {
-			rsiBear := prevRSI > strategyConfig.RSI_OVERBOUGHT && currentRSI <= 58
+			rsiBear := prevRSI > strategyConfig.RSI_OVERBOUGHT_SHORT && currentRSI <= strategyConfig.RSI_ENTRY_SHORT
 			if rsiBear && volumeOK && currentPositionPct < firstBatchSize {
 				if position == nil {
 					position = &Position{side: "SHORT"}
@@ -338,10 +338,10 @@ func RunBacktest(klines []Kline, config BacktestConfig, strategyConfig StrategyC
 				balance -= k.Close * amount * config.FeeRate
 			}
 
-			// 第二批：盈利 +2% 加仓
+			// 第二批：盈利 +1.5% 加仓
 			if position != nil && len(position.entries) == 1 {
 				pnlPercent := (position.avgPrice - k.Close) / position.avgPrice
-				if pnlPercent >= 0.02 && currentPositionPct < firstBatchSize + secondBatchSize {
+				if pnlPercent >= 0.015 && currentPositionPct < firstBatchSize + secondBatchSize {
 					notional := balance * secondBatchSize
 					amount := notional / k.Close
 					position.entries = append(position.entries, PositionEntry{
@@ -476,7 +476,7 @@ type OptimizeResult struct {
 	ProfitFactor float64
 }
 
-// RunOptimize 参数优化
+// RunOptimize 参数优化（多空分开）
 func RunOptimize(klines []Kline, config BacktestConfig) {
 	fmt.Println("\n========== 参数优化 ==========")
 	fmt.Println("遍历参数空间...")
@@ -484,50 +484,54 @@ func RunOptimize(klines []Kline, config BacktestConfig) {
 	var results []OptimizeResult
 
 	// 参数范围
-	rsiOversoldRange := []float64{30, 35, 40}
-	rsiOverboughtRange := []float64{65, 70, 75}
-	rsiEntryRange := []float64{40, 45, 50}
-	volRatioRange := []float64{1.5, 2.0, 2.5}
+	oversoldLongRange := []float64{35, 40, 45}
+	entryLongRange := []float64{45, 50, 55}
+	overboughtShortRange := []float64{55, 60, 65}
+	entryShortRange := []float64{45, 50, 55}
+	volRatioRange := []float64{1.0, 1.5, 2.0}
 	emaFastRange := []int{5, 7, 10}
 	emaSlowRange := []int{14, 20, 30}
 
-	total := len(rsiOversoldRange) * len(rsiOverboughtRange) * len(rsiEntryRange) * len(volRatioRange) * len(emaFastRange) * len(emaSlowRange)
+	total := len(oversoldLongRange) * len(entryLongRange) * len(overboughtShortRange) * len(entryShortRange) * len(volRatioRange) * len(emaFastRange) * len(emaSlowRange)
 	count := 0
 
-	for _, oversold := range rsiOversoldRange {
-		for _, overbought := range rsiOverboughtRange {
-			for _, entry := range rsiEntryRange {
-				for _, volRatio := range volRatioRange {
-					for _, emaFast := range emaFastRange {
-						for _, emaSlow := range emaSlowRange {
-							// 跳过不合理的参数组合
-							if oversold >= entry || entry >= overbought || emaFast >= emaSlow {
-								continue
-							}
+	for _, oversoldLong := range oversoldLongRange {
+		for _, entryLong := range entryLongRange {
+			for _, overboughtShort := range overboughtShortRange {
+				for _, entryShort := range entryShortRange {
+					for _, volRatio := range volRatioRange {
+						for _, emaFast := range emaFastRange {
+							for _, emaSlow := range emaSlowRange {
+								// 跳过不合理的参数组合
+								if oversoldLong >= entryLong || overboughtShort <= entryShort || emaFast >= emaSlow {
+									continue
+								}
 
-							strategyConfig := StrategyConfig{
-								RSI_PERIOD:          14,
-								RSI_OVERSOLD:        oversold,
-								RSI_OVERBOUGHT:      overbought,
-								RSI_ENTRY:           entry,
-								EMA_FAST:            emaFast,
-								EMA_SLOW:            emaSlow,
-								VOL_RATIO_THRESHOLD: volRatio,
-							}
+								strategyConfig := StrategyConfig{
+									RSI_PERIOD:           14,
+									RSI_OVERSOLD_LONG:    oversoldLong,
+									RSI_ENTRY_LONG:       entryLong,
+									RSI_OVERBOUGHT_SHORT: overboughtShort,
+									RSI_ENTRY_SHORT:      entryShort,
+									EMA_FAST:             emaFast,
+									EMA_SLOW:             emaSlow,
+									VOL_RATIO_THRESHOLD:  volRatio,
+								}
 
-							result := RunBacktest(klines, config, strategyConfig)
+								result := RunBacktest(klines, config, strategyConfig)
 
-							results = append(results, OptimizeResult{
-								Config:     strategyConfig,
-								TotalPnL:   result.TotalPnL,
-								WinRate:    result.WinRate,
-								Trades:     result.TotalTrades,
-								ProfitFactor: result.ProfitFactor,
-							})
+								results = append(results, OptimizeResult{
+									Config:     strategyConfig,
+									TotalPnL:   result.TotalPnL,
+									WinRate:    result.WinRate,
+									Trades:     result.TotalTrades,
+									ProfitFactor: result.ProfitFactor,
+								})
 
-							count++
-							if count%100 == 0 {
-								fmt.Printf("进度: %d/%d\n", count, total)
+								count++
+								if count%200 == 0 {
+									fmt.Printf("进度: %d/%d\n", count, total)
+								}
 							}
 						}
 					}
@@ -544,10 +548,11 @@ func RunOptimize(klines []Kline, config BacktestConfig) {
 	fmt.Println("排名 | 总盈亏 | 胜率 | 交易次数 | 盈亏比 | 参数")
 	fmt.Println("-----|--------|------|----------|--------|------")
 	for i, r := range results[:10] {
-		fmt.Printf("%d | $%.2f | %.1f%% | %d | %.2f | oversold=%.0f overbought=%.0f entry=%.0f vol=%.1f ema=%d/%d\n",
+		fmt.Printf("%d | $%.2f | %.1f%% | %d | %.2f | long: %.0f->%.0f short: %.0f->%.0f vol=%.1f ema=%d/%d\n",
 			i+1, r.TotalPnL, r.WinRate*100, r.Trades, r.ProfitFactor,
-			r.Config.RSI_OVERSOLD, r.Config.RSI_OVERBOUGHT, r.Config.RSI_ENTRY, r.Config.VOL_RATIO_THRESHOLD,
-			r.Config.EMA_FAST, r.Config.EMA_SLOW)
+			r.Config.RSI_OVERSOLD_LONG, r.Config.RSI_ENTRY_LONG,
+			r.Config.RSI_OVERBOUGHT_SHORT, r.Config.RSI_ENTRY_SHORT,
+			r.Config.VOL_RATIO_THRESHOLD, r.Config.EMA_FAST, r.Config.EMA_SLOW)
 	}
 }
 

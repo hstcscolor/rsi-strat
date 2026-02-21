@@ -165,26 +165,31 @@ const (
 	SignalCloseShort
 )
 
-// StrategyConfig 策略参数
+// StrategyConfig 策略参数（做多做空分开）
 type StrategyConfig struct {
-	RSI_PERIOD          int     // RSI 周期
-	RSI_OVERSOLD        float64 // RSI 超卖阈值
-	RSI_OVERBOUGHT      float64 // RSI 超买阈值
-	RSI_ENTRY           float64 // RSI 入场阈值
-	EMA_FAST            int     // 快线 EMA 周期
-	EMA_SLOW            int     // 慢线 EMA 周期
-	VOL_RATIO_THRESHOLD float64 // 成交量倍数阈值
+	RSI_PERIOD           int
+	// 做多参数
+	RSI_OVERSOLD_LONG    float64
+	RSI_ENTRY_LONG       float64
+	// 做空参数
+	RSI_OVERBOUGHT_SHORT float64
+	RSI_ENTRY_SHORT      float64
+	// EMA 和成交量
+	EMA_FAST             int
+	EMA_SLOW             int
+	VOL_RATIO_THRESHOLD  float64
 }
 
-// DefaultConfig 默认参数（分批建仓优化后）
+// DefaultConfig 默认参数（短线投机，5倍杠杆）
 var DefaultConfig = StrategyConfig{
-	RSI_PERIOD:          14,
-	RSI_OVERSOLD:        40,
-	RSI_OVERBOUGHT:      75,
-	RSI_ENTRY:           45,
-	EMA_FAST:            7,
-	EMA_SLOW:            20,
-	VOL_RATIO_THRESHOLD: 2.0,
+	RSI_PERIOD:           14,
+	RSI_OVERSOLD_LONG:    40,
+	RSI_ENTRY_LONG:       45,
+	RSI_OVERBOUGHT_SHORT: 55,
+	RSI_ENTRY_SHORT:      45,
+	EMA_FAST:             7,
+	EMA_SLOW:             30,
+	VOL_RATIO_THRESHOLD:  1.0,
 }
 
 // TrendState 趋势状态
@@ -226,13 +231,13 @@ func GenerateSignal(klines []Kline, config StrategyConfig) Signal {
 	volumeOK := currentVolRatio >= config.VOL_RATIO_THRESHOLD
 
 	// === 做多信号 ===
-	rsiBull := prevRSI < config.RSI_OVERSOLD && currentRSI >= config.RSI_ENTRY
+	rsiBull := prevRSI < config.RSI_OVERSOLD_LONG && currentRSI >= config.RSI_ENTRY_LONG
 	if rsiBull && uptrend && volumeOK {
 		return SignalLong
 	}
 
 	// === 做空信号 ===
-	rsiBear := prevRSI > config.RSI_OVERBOUGHT && currentRSI <= 58
+	rsiBear := prevRSI > config.RSI_OVERBOUGHT_SHORT && currentRSI <= config.RSI_ENTRY_SHORT
 	if rsiBear && downtrend && volumeOK {
 		return SignalShort
 	}

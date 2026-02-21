@@ -18,14 +18,15 @@ type Config struct {
 	ApiKey    string `json:"api_key"`
 	SecretKey string `json:"secret_key"`
 	Symbol    string `json:"symbol"`
-	// 策略参数
-	RSI_PERIOD          int     `json:"rsi_period"`
-	RSI_OVERSOLD        float64 `json:"rsi_oversold"`
-	RSI_OVERBOUGHT      float64 `json:"rsi_overbought"`
-	RSI_ENTRY           float64 `json:"rsi_entry"`
-	EMA_FAST            int     `json:"ema_fast"`
-	EMA_SLOW            int     `json:"ema_slow"`
-	VOL_RATIO_THRESHOLD float64 `json:"vol_ratio_threshold"`
+	// 策略参数（多空分开）
+	RSI_PERIOD           int     `json:"rsi_period"`
+	RSI_OVERSOLD_LONG    float64 `json:"rsi_oversold_long"`
+	RSI_ENTRY_LONG       float64 `json:"rsi_entry_long"`
+	RSI_OVERBOUGHT_SHORT float64 `json:"rsi_overbought_short"`
+	RSI_ENTRY_SHORT      float64 `json:"rsi_entry_short"`
+	EMA_FAST             int     `json:"ema_fast"`
+	EMA_SLOW             int     `json:"ema_slow"`
+	VOL_RATIO_THRESHOLD  float64 `json:"vol_ratio_threshold"`
 	// 交易参数
 	PositionSize float64 `json:"position_size"`
 	Leverage     int     `json:"leverage"`
@@ -33,19 +34,20 @@ type Config struct {
 	DryRun bool `json:"dry_run"`
 }
 
-// DefaultConfig 默认配置
+// DefaultConfig 默认配置（短线投机，5倍杠杆）
 var defaultConfig = Config{
-	Symbol:              "BTCUSDT",
-	RSI_PERIOD:          14,
-	RSI_OVERSOLD:        40,
-	RSI_OVERBOUGHT:      70,
-	RSI_ENTRY:           45,
-	EMA_FAST:            5,
-	EMA_SLOW:            14,
-	VOL_RATIO_THRESHOLD: 2.0,
-	PositionSize:        0.1,
-	Leverage:            1,
-	DryRun:              true,
+	Symbol:               "BTCUSDT",
+	RSI_PERIOD:           14,
+	RSI_OVERSOLD_LONG:    45,
+	RSI_ENTRY_LONG:       50,
+	RSI_OVERBOUGHT_SHORT: 55,
+	RSI_ENTRY_SHORT:      50,
+	EMA_FAST:             7,
+	EMA_SLOW:             20,
+	VOL_RATIO_THRESHOLD:  1.5,
+	PositionSize:         0.5,
+	Leverage:             5,
+	DryRun:               true,
 }
 
 // LoadConfig 加载配置
@@ -199,13 +201,14 @@ func (s *Strategy) Run() error {
 
 			// 生成信号
 			strategyConfig := StrategyConfig{
-				RSI_PERIOD:          s.config.RSI_PERIOD,
-				RSI_OVERSOLD:        s.config.RSI_OVERSOLD,
-				RSI_OVERBOUGHT:      s.config.RSI_OVERBOUGHT,
-				RSI_ENTRY:           s.config.RSI_ENTRY,
-				EMA_FAST:            s.config.EMA_FAST,
-				EMA_SLOW:            s.config.EMA_SLOW,
-				VOL_RATIO_THRESHOLD: s.config.VOL_RATIO_THRESHOLD,
+				RSI_PERIOD:           s.config.RSI_PERIOD,
+				RSI_OVERSOLD_LONG:    s.config.RSI_OVERSOLD_LONG,
+				RSI_ENTRY_LONG:       s.config.RSI_ENTRY_LONG,
+				RSI_OVERBOUGHT_SHORT: s.config.RSI_OVERBOUGHT_SHORT,
+				RSI_ENTRY_SHORT:      s.config.RSI_ENTRY_SHORT,
+				EMA_FAST:             s.config.EMA_FAST,
+				EMA_SLOW:             s.config.EMA_SLOW,
+				VOL_RATIO_THRESHOLD:  s.config.VOL_RATIO_THRESHOLD,
 			}
 
 			signal := GenerateSignal(s.klines, strategyConfig)
